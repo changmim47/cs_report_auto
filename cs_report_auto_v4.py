@@ -14,7 +14,7 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 st.set_page_config(
-    page_title="CS 일일보고 자동 요약 생성기 v4",
+    page_title="CS 일일보고 자동 요약 생성기",
     page_icon="📊",
     layout="wide",
 )
@@ -114,9 +114,25 @@ for key, default in {
     st.session_state.setdefault(key, default)
 
 
-st.markdown('<div class="app-header">📊 CS 일일보고 자동 요약 생성기 (강사 자동 인식 v4)</div>', unsafe_allow_html=True)
+st.markdown('<div class="app-header">📊 CS 일일보고 자동 요약 생성기</div>', unsafe_allow_html=True)
 
 client = OpenAI(api_key=api_key)
+
+# ✅ 사이드바 UI 안내 복구
+st.sidebar.header("도움말 ❔")
+st.sidebar.markdown(
+    """
+    일일업무 보고 중 카테고리 별 
+    접수 내용을 요약정리하는 기능입니다.
+
+    ✅ FAQ 관리자 송수신관리 엑셀 다운로드
+
+    ✅ 엑셀 저장 방식을 .xslx 로 변경 
+    
+    ✅ 파일 업로드
+
+    """
+)
 
 uploaded_file = st.file_uploader("📂 엑셀 업로드 (.xlsx)")
 run = st.button("🔍 요약 생성하기")
