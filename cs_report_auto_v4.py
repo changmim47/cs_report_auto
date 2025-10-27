@@ -138,7 +138,8 @@ if run and uploaded_file:
     grouped = q_df.groupby("대표카테고리")["내용"].apply(list).to_dict()
 
     KEYWORDS = ["중복", "iOS", "플레이어 ID", "충돌이슈", "초기화"]
-    keyword_df = df[df["내용"].str.contains("|".join(KEYWORDS), case=False, na=False)]
+    keyword_df = df[
+        (df["대표카테고리"] == "동영상, 모바일 기기 관련") & (df["내용"].str.contains("|".join(KEYWORDS), case=False, na=False))]
     st.session_state["keyword_count"] = len(keyword_df)
 
     buf = io.BytesIO()
