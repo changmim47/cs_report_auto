@@ -6,6 +6,7 @@ import os
 import re
 from collections import Counter
 import io
+import altair as alt
 
 # =============================
 # 🔧 초기 설정 & 스타일
@@ -134,118 +135,175 @@ st.sidebar.markdown(
     """
 )
 
-uploaded_file = st.file_uploader("📂 엑셀 업로드 (.xlsx)")
-run = st.button("🔍 요약 생성하기")
+# ============================================================
+# ✅ 탭 UI 구성 (요약 / 건수 통계)
+# ============================================================
+tab1, tab2 = st.tabs(["🔍 요약 생성", "📊 문의 건수 통계"])
 
+# ✅ TAB 1 : 기존 기능 유지
+with tab1:
+    uploaded_file = st.file_uploader("📂 엑셀 업로드 (.xlsx)")
+    run = st.button("🔍 요약 생성하기")
 
-# ✅ 실행: 최초 분석 1회만
-if run and uploaded_file:
-    st.session_state["analyzed"] = False
-    status_box = st.empty()
-    status_box.info("🔄 문의를 분석 중입니다... 잠시만 기다려 주세요! ⏳")
+    # 🔁 기존 요약 생성 로직 그대로 유지
+    if run and uploaded_file:
+        st.session_state["analyzed"] = False
+        status_box = st.empty()
+        status_box.info("🔄 문의를 분석 중입니다...")
 
-    df = pd.read_excel(uploaded_file)
-    df = df.rename(columns=build_column_map(df.columns))
+        df = pd.read_excel(uploaded_file)
+        df = df.rename(columns=build_column_map(df.columns))
+        df["대표카테고리"] = df["카테고리"].apply(map_category)
+        df["강사명"] = df["내용"].apply(detect_teacher)
 
-    df["대표카테고리"] = df["카테고리"].apply(map_category)
-    df["강사명"] = df["내용"].apply(detect_teacher)
+        q_df = df[df["구분"] == "Q"]
+        grouped = q_df.groupby("대표카테고리")["내용"].apply(list).to_dict()
 
-    q_df = df[df["구분"] == "Q"]
-    grouped = q_df.groupby("대표카테고리")["내용"].apply(list).to_dict()
+        KEYWORDS = ["중복", "iOS", "플레이어 ID", "충돌이슈", "초기화"]
+        keyword_df = df[
+            (df["대표카테고리"] == "동영상, 모바일 기기 관련") & 
+            (df["내용"].str.contains("|".join(KEYWORDS), case=False, na=False))
+        ]
 
-    KEYWORDS = ["중복", "iOS", "플레이어 ID", "충돌이슈", "초기화"]
-    keyword_df = df[
-        (df["대표카테고리"] == "동영상, 모바일 기기 관련") & (df["내용"].str.contains("|".join(KEYWORDS), case=False, na=False))]
-    st.session_state["keyword_count"] = len(keyword_df)
+        st.session_state["keyword_count"] = len(keyword_df)
+        buf = io.BytesIO()
+        keyword_df.to_excel(buf, index=False)
+        buf.seek(0)
+        st.session_state["keyword_buffer"] = buf
 
-    buf = io.BytesIO()
-    keyword_df.to_excel(buf, index=False)
-    buf.seek(0)
-    st.session_state["keyword_buffer"] = buf
+        cards_payload = []
+        all_lines = []
+        progress = st.progress(0)
+        cols = st.columns(2)
 
-    cards_payload = []
-    all_lines = []
-    progress = st.progress(0)
-    cols = st.columns(2)
-
-    for i, (cat, qs) in enumerate(grouped.items(), start=1):
-        common = [w for w, _ in Counter(preprocess_text(qs)).most_common(10)]
-        teachers = q_df[q_df["대표카테고리"] == cat]["강사명"].dropna().unique()
-        mention = f"특정 강사 관련 문의 포함: {', '.join(teachers)} 선생님 관련 문의 포함." if len(teachers) else ""
-        joined = "\n".join([str(x) for x in qs[:30]])
-
-        prompt = f"""
-        아래는 '{cat}' 카테고리에 해당하는 회원 문의 내용입니다.
-        총 {len(qs)}건의 문의가 있습니다.
-        주요 키워드: {', '.join(common)}
-        {mention}
-        아래 조건을 반드시 지켜 요약하세요.
-        1. 각 줄은 반드시 어떤 문의인지 알 수 있도록 간략하게 정리해서 '~ 관련 문의 접수' 형태로 끝날 것.
-        2. 강사명이 포함된 경우 반드시 명시할 것 (예: '유휘운 선생님 교재 관련 문의 접수').
-        3. 불필요한 설명, 원인, 사유, 문장형 해설 금지.
-        4. 최대 5줄까지만 작성.
-        5. 같은 의미의 문의는 하나로 묶을 것.
-
-        문의 내용:
-        {joined}
-        """
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role":"user","content":prompt}],
-                temperature=0.3,
+        for i, (cat, qs) in enumerate(grouped.items(), start=1):
+            common = [w for w, _ in Counter(preprocess_text(qs)).most_common(10)]
+            teachers = q_df[q_df["대표카테고리"] == cat]["강사명"].dropna().unique()
+            mention = (
+                f"특정 강사 관련 문의 포함: {', '.join(teachers)} 선생님 관련 문의 포함."
+                if len(teachers) else ""
             )
-            summary=response.choices[0].message.content.strip()
-        except:
-            summary="(요약 실패)"
 
-        cards_payload.append({"cat":cat,"count":len(qs),"summary":summary})
-        all_lines.append(f"**[{cat}]**\n{summary}\n")
-        progress.progress(i/len(grouped))
+            joined = "\n".join([str(x) for x in qs[:30]])
 
-    status_box.empty()   # ✅ 분석중 메시지 제거
+            prompt = f"""
+            아래는 '{cat}' 카테고리에 해당하는 회원 문의 내용입니다.
+            총 {len(qs)}건의 문의가 있습니다.
+            주요 키워드: {', '.join(common)}
+            {mention}
+            아래 조건을 반드시 지켜 요약하세요.
+            1. 각 줄은 반드시 어떤 문의인지 알 수 있도록 간략하게 정리해서 '~ 관련 문의 접수' 형태로 끝날 것.
+            2. 강사명이 포함된 경우 반드시 명시할 것 (예: '유휘운 선생님 교재 관련 문의 접수').
+            3. 불필요한 설명, 원인, 사유, 문장형 해설 금지.
+            4. 최대 5줄까지만 작성.
+            5. 같은 의미의 문의는 하나로 묶을 것.
 
-    st.session_state["cards_payload"]=cards_payload
-    st.session_state["report_text"]="\n".join(all_lines)
-    st.session_state["analyzed"]=True
+            문의 내용:
+            {joined}
+            """
+
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                summary = resp.choices[0].message.content.strip()
+            except:
+                summary = "(요약 실패)"
+
+            cards_payload.append({"cat": cat, "count": len(qs), "summary": summary})
+            all_lines.append(f"**[{cat}]**\n{summary}\n")
+            progress.progress(i / len(grouped))
+
+        status_box.empty()
+
+        st.session_state["cards_payload"] = cards_payload
+        st.session_state["report_text"] = "\n".join(all_lines)
+        st.session_state["analyzed"] = True
+
+    # ✅ 요약 결과 출력
+    if st.session_state["analyzed"]:
+        st.success("✅ 분석 완료!")
+
+        st.markdown(
+            f"<div class='card'><strong>- iOS 기기ID 관련 기기삭제/해결 요청 문의 약 {st.session_state['keyword_count']}건</strong></div>",
+            unsafe_allow_html=True,
+        )
+
+        st.download_button(
+            "📥 키워드 추출 데이터 다운로드",
+            st.session_state["keyword_buffer"],
+            "keyword_extracted_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        cols = st.columns(2)
+        for i, item in enumerate(st.session_state["cards_payload"], start=1):
+            with cols[i % 2]:
+                st.markdown(f"""
+                    <div class='card'>
+                        <div class='kicker'>📂 [{item['cat']}]</div>
+                        <div class='muted'>총 {item['count']}건</div>
+                        <div style='white-space:pre-wrap;'>{item['summary']}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+        st.download_button(
+            "📥 전체 요약 다운로드",
+            st.session_state["report_text"].encode("utf-8"),
+            "CS_일일보고_v4_강사포함.txt",
+            "text/plain",
+        )
 
 
-# ✅ 완료 결과 출력 (다운로드 눌러도 유지)
-if st.session_state["analyzed"]:
-    st.success("✅ 분석 완료! 결과를 아래에서 확인하세요 ✅")
+CATEGORY_MAP_MAIN = {
+    "강좌/상품 신청, 배송": "넥스트패스/강좌/교재 신청, 배송",
+    "결제, 취소, 환불": "결제/취소/환불",
+    "동영상 수강-PC": "동영상, 모바일 기기 관련",
+    "모바일 기기": "동영상, 모바일 기기 관련",
+    "사이트 이용": "홈페이지/이벤트 관련",
+    "회원정보": "홈페이지/이벤트 관련",
+    "공무원 수험정보": "홈페이지/이벤트 관련",
+    "기타 문의": "홈페이지/이벤트 관련",
+}
 
-    st.markdown(
-        f"<div class='card'><strong>- iOS 디바이스ID 지속 변경 이슈로 기기삭제 요청 및 해결 요청 문의 - 약 {st.session_state['keyword_count']}건</strong></div>",
-        unsafe_allow_html=True
-    )
+def map_main_category(v):
+    v = str(v).strip()
+    return CATEGORY_MAP_MAIN.get(v, v)  # 매핑 없으면 원본 유지
 
-    st.download_button(
-        "📥 키워드 추출 데이터 다운로드 (Excel)",
-        st.session_state["keyword_buffer"],
-        "keyword_extracted_data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_keywords"
-    )
+with tab2:
+    st.header("📊 대분류 기반 문의 건수 통계")
 
-    cols = st.columns(2)
-    for i, item in enumerate(st.session_state["cards_payload"], start=1):
-        with cols[i % 2]:
-            st.markdown(f"""
-                <div class='card'>
-                    <div class='kicker'>📂 [{item['cat']}]</div>
-                    <div class='muted'>총 {item['count']}건</div>
-                    <div style='white-space:pre-wrap;'>{item['summary']}</div>
-                </div>
-            """, unsafe_allow_html=True)
+    uploaded_file_2 = st.file_uploader("📂 통계용 엑셀 업로드 (.xlsx)", key="stats_file")
 
-    st.download_button(
-        "📥 전체 요약 다운로드",
-        st.session_state["report_text"].encode("utf-8"),
-        "CS_일일보고_v4_강사포함.txt",
-        "text/plain",
-        key="download_full"
-    )
+    if uploaded_file_2:
+        df2 = pd.read_excel(uploaded_file_2)
+        df2 = df2.rename(columns=lambda x: str(x).strip())
 
-else:
-    st.info("📂 파일 업로드 후 ‘요약 생성하기’를 눌러주세요")
+        if "대분류" not in df2.columns or "문의량" not in df2.columns:
+            st.error("❌ 필수 컬럼 누락: '대분류', '문의량' 필요")
+            st.dataframe(df2.head())
+            st.stop()
+
+        df2["대표카테고리"] = df2["대분류"].apply(map_main_category)
+
+        count_df = df2.groupby("대표카테고리")["문의량"].sum().reset_index()
+        count_df = count_df.sort_values(by="문의량", ascending=False)
+
+        st.subheader("📌 통계 결과")
+        for _, row in count_df.iterrows():
+            st.write(f"[{row['대표카테고리']}] : {int(row['문의량'])}건")
+
+        st.divider()
+        st.dataframe(count_df, use_container_width=True)
+
+        chart = alt.Chart(count_df).mark_bar().encode(
+            x=alt.X("대표카테고리:N", sort="-y", title="카테고리"),
+            y=alt.Y("문의량:Q", title="문의수"),
+            tooltip=["대표카테고리", "문의량"]
+        ).properties(height=400)
+
+        st.altair_chart(chart, use_container_width=True)
+
+    else:
+        st.info("📂 통계용 엑셀 파일을 업로드해주세요.")
